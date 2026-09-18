@@ -27,9 +27,6 @@
     #status[data-kind=error] { color: #c62828; }
     #status[data-kind=busy] { color: var(--accent); }
     #preview { background: #111; display: none; margin-top: 1rem; max-height: 55vh; max-width: 100%; width: auto; }
-    .crop-controls { margin-top: 1rem; }
-    .crop-controls input { width: 6rem; }
-    .crop-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
     .results-head { align-items: center; display: flex; justify-content: space-between; }
     #empty { border: 1px dashed var(--line); padding: 1.5rem; text-align: center; }
     #results { display: grid; gap: 1rem; list-style: none; padding: 0; }
@@ -81,26 +78,7 @@
         <button id="stop" type="button" disabled>Stop capture</button>
       </div>
       <p id="status" role="status" aria-live="polite">Ready.</p>
-      <div class="crop-controls">
-        <div class="controls">
-          <label>Left <input id="crop-left" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
-          <label>Right <input id="crop-right" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
-          <label>Top <input id="crop-top" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
-          <label>Bottom <input id="crop-bottom" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
-        </div>
-        <div class="crop-actions" aria-label="Crop navigation controls">
-          <button type="button" data-crop-action="zoom-in">Zoom In</button>
-          <button type="button" data-crop-action="zoom-out">Zoom Out</button>
-          <button type="button" data-crop-action="left">Left</button>
-          <button type="button" data-crop-action="right">Right</button>
-          <button type="button" data-crop-action="up">Up</button>
-          <button type="button" data-crop-action="down">Down</button>
-          <button type="button" data-crop-action="reset">Reset</button>
-          <button id="scan-crop" class="primary" type="button" disabled>Scan crop</button>
-        </div>
-      </div>
-      <canvas id="preview" aria-label="Cropped input preview"></canvas>
-      <video id="media-source" autoplay muted playsinline hidden></video>
+      <video id="preview" autoplay muted playsinline></video>
     </section>
 
     <section aria-labelledby="results-title">
@@ -119,18 +97,13 @@
     const ui = {
       decoder: $('#decoder'), delay: $('#delay'), formats: $('#formats'), files: $('#files'),
       camera: $('#camera'), screen: $('#screen'), stop: $('#stop'), status: $('#status'),
-      preview: $('#preview'), mediaSource: $('#media-source'), clear: $('#clear'), results: $('#results'), empty: $('#empty'),
-      toasts: $('#toasts'), scanCrop: $('#scan-crop'), crop: {
-        left: $('#crop-left'), right: $('#crop-right'), top: $('#crop-top'), bottom: $('#crop-bottom')
-      }
+      preview: $('#preview'), clear: $('#clear'), results: $('#results'), empty: $('#empty'),
+      toasts: $('#toasts')
     };
-    const canvas = ui.preview;
+    const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
     const history = new Map();
     let activeStream = null;
-    let currentImage = null;
-    let detectionRunning = false;
-    let refreshPending = false;
     let runId = 0;
 
     const ZXING_VERSION = '3.1.4';
@@ -215,41 +188,11 @@
       if (source !== canvas) drawSource(source);
       return context.getImageData(0, 0, canvas.width, canvas.height);
     }
-    function sourceDimensions(source) {
-      return {
-        width: Math.max(0, Math.floor(source?.videoWidth || source?.naturalWidth || source?.width || 0)),
-        height: Math.max(0, Math.floor(source?.videoHeight || source?.naturalHeight || source?.height || 0))
-      };
-    }
-    function numericCropValue(edge) {
-      const value = Number(ui.crop[edge].value);
-      return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
-    }
-    function cropRectangle(source, updateInputs = true) {
-      const { width, height } = sourceDimensions(source);
-      if (!width || !height) return null;
-      const crop = {
-        left: Math.min(numericCropValue('left'), width - 1),
-        right: numericCropValue('right'),
-        top: Math.min(numericCropValue('top'), height - 1),
-        bottom: numericCropValue('bottom')
-      };
-      crop.right = Math.min(crop.right, width - crop.left - 1);
-      crop.bottom = Math.min(crop.bottom, height - crop.top - 1);
-      if (updateInputs) {
-        for (const edge of ['left', 'right', 'top', 'bottom']) ui.crop[edge].value = crop[edge];
-      }
-      return { ...crop, x: crop.left, y: crop.top,
-        width: width - crop.left - crop.right, height: height - crop.top - crop.bottom,
-        sourceWidth: width, sourceHeight: height };
-    }
     function drawSource(source) {
-      const crop = cropRectangle(source);
-      if (!crop) return false;
-      canvas.width = crop.width; canvas.height = crop.height;
-      context.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-      canvas.style.display = 'block';
-      return true;
+      const width = source.videoWidth || source.naturalWidth || source.width;
+      const height = source.videoHeight || source.naturalHeight || source.height;
+      canvas.width = width; canvas.height = height;
+      context.drawImage(source, 0, 0, width, height);
     }
     function setStatus(message, kind = '') {
       ui.status.textContent = message; ui.status.dataset.kind = kind;
@@ -305,15 +248,9 @@
 
     async function detectCanvas(adapter) {
       // The caller always awaits this promise; detection can therefore never overlap.
-      detectionRunning = true;
-      try {
-        const detections = await adapter.decode(canvas);
-        await recordDetections(detections);
-        return detections.length;
-      } finally {
-        detectionRunning = false;
-        if (refreshPending) { refreshPending = false; refreshPreview(); }
-      }
+      const detections = await adapter.decode(canvas);
+      await recordDetections(detections);
+      return detections.length;
     }
     const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -335,13 +272,13 @@
           ? { video: { facingMode: { ideal: 'environment' } }, audio: false }
           : { video: true, audio: false });
         if (id !== runId) { activeStream.getTracks().forEach(track => track.stop()); return; }
-        ui.mediaSource.srcObject = activeStream;
-        await ui.mediaSource.play();
+        ui.preview.srcObject = activeStream; ui.preview.style.display = 'block';
+        await ui.preview.play();
         activeStream.getVideoTracks()[0]?.addEventListener('ended', () => stopCapture('Capture ended.'));
         setCaptureControls(true); setStatus('Capturing and scanning…', 'busy');
         while (id === runId && activeStream?.active) {
-          if (ui.mediaSource.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && ui.mediaSource.videoWidth) {
-            drawSource(ui.mediaSource);
+          if (ui.preview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && ui.preview.videoWidth) {
+            drawSource(ui.preview);
             await detectCanvas(adapter);
           }
           const seconds = Math.max(0, Number(ui.delay.value) || 0);
@@ -357,14 +294,11 @@
     function setCaptureControls(running) {
       ui.stop.disabled = !running; ui.camera.disabled = running; ui.screen.disabled = running;
       ui.files.disabled = running; ui.decoder.disabled = running;
-      ui.scanCrop.disabled = running || !currentImage;
     }
     function stopCapture(message) {
       runId += 1;
       if (activeStream) activeStream.getTracks().forEach(track => track.stop());
-      activeStream = null; ui.mediaSource.pause(); ui.mediaSource.srcObject = null;
-      if (currentImage && !detectionRunning) drawSource(currentImage);
-      else if (!currentImage) ui.preview.style.display = 'none';
+      activeStream = null; ui.preview.pause(); ui.preview.srcObject = null; ui.preview.style.display = 'none';
       setCaptureControls(false);
       if (message) setStatus(message);
     }
@@ -380,16 +314,14 @@
       stopCapture();
       const files = Array.from(ui.files.files || []);
       if (!files.length) return;
-      ui.files.disabled = true; ui.camera.disabled = true; ui.screen.disabled = true; ui.decoder.disabled = true; ui.scanCrop.disabled = true;
+      ui.files.disabled = true; ui.camera.disabled = true; ui.screen.disabled = true; ui.decoder.disabled = true;
       try {
         const adapter = await selectDecoder(false);
         for (let index = 0; index < files.length; index++) {
           setStatus(`Scanning image ${index + 1} of ${files.length}…`, 'busy');
           let image;
           try {
-            image = await loadImage(files[index]);
-            currentImage?.close?.(); currentImage = image; image = null;
-            drawSource(currentImage);
+            image = await loadImage(files[index]); drawSource(image);
             const count = await detectCanvas(adapter);
             setStatus(`${files[index].name}: ${count} code${count === 1 ? '' : 's'} found.`);
           } catch (error) {
@@ -398,61 +330,6 @@
         }
       } catch (error) { setStatus(friendlyError(error), 'error'); }
       finally { ui.files.value = ''; setCaptureControls(false); }
-    }
-
-    function activeSource() {
-      return activeStream?.active ? ui.mediaSource : currentImage;
-    }
-    function refreshPreview() {
-      const source = activeSource();
-      if (!source) {
-        // Still sanitize manually-entered values before a source is available.
-        for (const edge of ['left', 'right', 'top', 'bottom']) ui.crop[edge].value = numericCropValue(edge);
-        return;
-      }
-      if (detectionRunning) { refreshPending = true; return; }
-      drawSource(source);
-    }
-    function setCrop(crop) {
-      for (const edge of ['left', 'right', 'top', 'bottom']) ui.crop[edge].value = Math.max(0, Math.floor(crop[edge] || 0));
-      refreshPreview();
-    }
-    function navigateCrop(action) {
-      if (action === 'reset') { setCrop({ left: 0, right: 0, top: 0, bottom: 0 }); return; }
-      const source = activeSource();
-      const crop = source && cropRectangle(source);
-      if (!crop) return;
-      const stepX = Math.max(1, Math.round(crop.sourceWidth * .05));
-      const stepY = Math.max(1, Math.round(crop.sourceHeight * .05));
-      if (action === 'zoom-in') {
-        const x = Math.min(stepX, Math.floor((crop.width - 1) / 2));
-        const y = Math.min(stepY, Math.floor((crop.height - 1) / 2));
-        crop.left += x; crop.right += x; crop.top += y; crop.bottom += y;
-      } else if (action === 'zoom-out') {
-        crop.left = Math.max(0, crop.left - stepX); crop.right = Math.max(0, crop.right - stepX);
-        crop.top = Math.max(0, crop.top - stepY); crop.bottom = Math.max(0, crop.bottom - stepY);
-      } else if (action === 'left') {
-        const amount = Math.min(stepX, crop.left); crop.left -= amount; crop.right += amount;
-      } else if (action === 'right') {
-        const amount = Math.min(stepX, crop.right); crop.left += amount; crop.right -= amount;
-      } else if (action === 'up') {
-        const amount = Math.min(stepY, crop.top); crop.top -= amount; crop.bottom += amount;
-      } else if (action === 'down') {
-        const amount = Math.min(stepY, crop.bottom); crop.top += amount; crop.bottom -= amount;
-      }
-      setCrop(crop);
-    }
-    async function scanCurrentCrop() {
-      const source = currentImage;
-      if (!source || activeStream || detectionRunning) return;
-      ui.scanCrop.disabled = true;
-      try {
-        const adapter = await selectDecoder(false);
-        drawSource(source);
-        const count = await detectCanvas(adapter);
-        setStatus(`${count} code${count === 1 ? '' : 's'} found in the current crop.`);
-      } catch (error) { setStatus(friendlyError(error), 'error'); }
-      finally { ui.scanCrop.disabled = false; }
     }
 
     function validWebUrl(value) {
@@ -507,12 +384,6 @@
     ui.camera.addEventListener('click', () => startMedia('camera'));
     ui.screen.addEventListener('click', () => startMedia('screen'));
     ui.stop.addEventListener('click', () => stopCapture('Capture stopped.'));
-    ui.scanCrop.addEventListener('click', scanCurrentCrop);
-    for (const input of Object.values(ui.crop)) input.addEventListener('input', refreshPreview);
-    document.querySelector('.crop-actions').addEventListener('click', event => {
-      const action = event.target.closest('[data-crop-action]')?.dataset.cropAction;
-      if (action) navigateCrop(action);
-    });
     ui.clear.addEventListener('click', () => { history.clear(); ui.results.replaceChildren(); ui.empty.hidden = false; setStatus('Detection history cleared.'); });
     window.addEventListener('pagehide', () => stopCapture());
 
