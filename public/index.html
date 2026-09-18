@@ -136,13 +136,19 @@
     const ZXING_VERSION = '3.1.4';
     const ZXING_MODULE = `https://cdn.jsdelivr.net/npm/zxing-wasm@${ZXING_VERSION}/dist/es/reader/index.js`;
     const ZXING_WASM = `https://cdn.jsdelivr.net/npm/zxing-wasm@${ZXING_VERSION}/dist/reader/zxing_reader.wasm`;
+    const supportsNativeBarcodeDetector = typeof window.BarcodeDetector === 'function';
+
+    if (!supportsNativeBarcodeDetector) {
+      ui.decoder.querySelector('option[value="native"]')?.remove();
+      ui.decoder.value = 'zxing';
+    }
 
     // Decoder adapters expose a small common interface, so another backend only needs init/decode methods.
     const decoders = {
       native: {
         label: 'Native BarcodeDetector', detector: null, formats: [],
         async init() {
-          if (!('BarcodeDetector' in window)) throw new Error('BarcodeDetector is not supported by this browser.');
+          if (!supportsNativeBarcodeDetector) throw new Error('BarcodeDetector is not supported by this browser.');
           this.formats = typeof BarcodeDetector.getSupportedFormats === 'function'
             ? await BarcodeDetector.getSupportedFormats() : [];
           this.detector = new BarcodeDetector(this.formats.length ? { formats: this.formats } : undefined);
